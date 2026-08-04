@@ -1,6 +1,28 @@
 package smb2
 
-import "testing"
+import (
+	"errors"
+	"testing"
+
+	. "github.com/macos-fuse-t/go-smb2/internal/erref"
+	"github.com/macos-fuse-t/go-smb2/vfs"
+)
+
+type failingStatFS struct{ *deleteDispositionFS }
+
+func (fs *failingStatFS) StatFS(vfs.VfsHandle) (*vfs.FSAttributes, error) {
+	return nil, errors.New("backend offline")
+}
+
+func TestQueryFSAttributesHandlesErrorAndNil(t *testing.T) {
+	base := newDeleteDispositionFS(vfs.FileTypeDirectory)
+	if attrs, status := queryFSAttributes(&failingStatFS{base}); attrs != nil || status != STATUS_IO_DEVICE_ERROR {
+		t.Fatalf("error result: attrs=%v status=%v", attrs, status)
+	}
+	if attrs, status := queryFSAttributes(base); attrs != nil || status != STATUS_IO_DEVICE_ERROR {
+		t.Fatalf("nil result: attrs=%v status=%v", attrs, status)
+	}
+}
 
 func TestFileFsSectorSizeInformationInfoEncode(t *testing.T) {
 	info := &FileFsSectorSizeInformationInfo{

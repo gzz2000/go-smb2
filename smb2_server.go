@@ -46,7 +46,11 @@ func main() {
 	log.Infof("Starting server at %s", cfg.ListenAddr)
 	go srv.Serve(cfg.ListenAddr)
 	if cfg.Advertise {
-		go bonjour.Advertise(cfg.ListenAddr, cfg.Hostname, cfg.Hostname, cfg.ShareName, true)
+		go func() {
+			if err := bonjour.Advertise(cfg.ListenAddr, cfg.Hostname, cfg.Hostname, cfg.ShareName, true); err != nil {
+				log.Errorf("Bonjour advertisement failed: %v", err)
+			}
+		}()
 	}
 
 	//go stats.StatServer(":9092")

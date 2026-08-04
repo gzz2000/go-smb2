@@ -1,6 +1,7 @@
 package smb2
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -588,10 +589,14 @@ send:
 	if deletePending {
 		if err := t.fs.Unlink(vfs.VfsHandle(fileId.HandleId())); err != nil {
 			log.Errorf("Delete failed: %v", err)
+			rsp.Status = uint32(statusFromVFSError(err))
 		}
 	}
 
-	t.fs.Close(vfs.VfsHandle(fileId.HandleId()))
+	if err := t.fs.Close(vfs.VfsHandle(fileId.HandleId())); err != nil && rsp.Status == 0 {
+		log.Errorf("Close failed: %v", err)
+		rsp.Status = uint32(statusFromVFSError(err))
+	}
 
 	c.sendPacket(rsp, &t.treeConn, ctx)
 
@@ -634,7 +639,12 @@ func (t *fileTree) flush(ctx *compoundContext, pkt []byte) error {
 		return c.sendPacket(rsp, &t.treeConn, ctx)
 	}
 
-	t.fs.Flush(vfs.VfsHandle(fileId.HandleId()))
+	if err := t.fs.Flush(vfs.VfsHandle(fileId.HandleId())); err != nil {
+		log.Errorf("Flush failed: %v", err)
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(statusFromVFSError(err)))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
 
 	rsp := new(FlushResponse)
 	PrepareResponse(&rsp.PacketHeader, pkt, 0)
@@ -823,9 +833,9 @@ func (t *fileTree) writeImpl(ctx *compoundContext, pkt []byte, fileId *FileId, o
 
 	if open.isEa {
 		log.Debugf("write ea: key %s, val %s", open.eaKey, r.Data())
-		// ignore xattr errors
-		t.fs.Setxattr(vfs.VfsHandle(fileId.HandleId()), open.eaKey, r.Data())
-		n = len(r.Data())
+		if err = t.fs.Setxattr(vfs.VfsHandle(fileId.HandleId()), open.eaKey, r.Data()); err == nil {
+			n = len(r.Data())
+		}
 	} else {
 		log.Debugf("Write: %d offset %d", r.Length(), r.Offset())
 		n, err = t.fs.Write(vfs.VfsHandle(fileId.HandleId()), r.Data(), r.Offset(), int(r.Flags()))
@@ -833,7 +843,7 @@ func (t *fileTree) writeImpl(ctx *compoundContext, pkt []byte, fileId *FileId, o
 
 	if err != nil || n == 0 {
 		log.Errorf("Write failed: %v", err)
-		status := STATUS_IO_DEVICE_ERROR
+		status := statusFromVFSError(err)
 		rsp := new(ErrorResponse)
 		PrepareAsyncResponse(rsp.Header(), pkt, asyncId, uint32(status))
 		return c.sendPacket(rsp, &t.treeConn, ctx)
@@ -1629,7 +1639,13 @@ func (t *fileTree) queryInfoFileSystem(ctx *compoundContext, pkt []byte) error {
 
 	log.Debugf("queryInfoFileSystem: class %d", r.FileInfoClass())
 
-	s, _ := t.fs.StatFS(0)
+	s, status := queryFSAttributes(t.fs)
+	if status != STATUS_SUCCESS {
+		log.Errorf("StatFS failed: %s", status)
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(status))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
 	bs := uint32(512)
 	if b, ok := s.GetBlockSize(); ok {
 		bs = uint32(b)
@@ -1743,6 +1759,17 @@ func (t *fileTree) queryInfoFileSystem(ctx *compoundContext, pkt []byte) error {
 	rsp.Output = info
 
 	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func queryFSAttributes(fs vfs.VFSFileSystem) (*vfs.FSAttributes, NtStatus) {
+	attrs, err := fs.StatFS(0)
+	if err != nil {
+		return nil, statusFromVFSError(err)
+	}
+	if attrs == nil {
+		return nil, STATUS_IO_DEVICE_ERROR
+	}
+	return attrs, STATUS_SUCCESS
 }
 
 func (t *fileTree) queryInfoFile(ctx *compoundContext, pkt []byte) error {
@@ -2140,7 +2167,12 @@ func (t *fileTree) setEndOfFileInfo(ctx *compoundContext, fileId *FileId, pkt []
 	res, _ := accept(SMB2_SET_INFO, pkt)
 	r := SetInfoRequestDecoder(res)
 	info := FileEndOfFileInformationDecoder(r.Buffer())
-	t.fs.Truncate(vfs.VfsHandle(fileId.HandleId()), uint64(info.EndOfFile()))
+	if err := t.fs.Truncate(vfs.VfsHandle(fileId.HandleId()), uint64(info.EndOfFile())); err != nil {
+		log.Errorf("truncate failed: %v", err)
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(statusFromVFSError(err)))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
 
 	rsp := new(SetInfoResponse)
 	PrepareResponse(&rsp.PacketHeader, pkt, 0)
@@ -2155,11 +2187,35 @@ func (t *fileTree) setEndOfFileInfoEa(ctx *compoundContext, fileId *FileId, eaKe
 	info := FileEndOfFileInformationDecoder(r.Buffer())
 
 	v := make([]byte, info.EndOfFile())
-	t.fs.Setxattr(vfs.VfsHandle(fileId.HandleId()), eaKey, v)
+	if err := t.fs.Setxattr(vfs.VfsHandle(fileId.HandleId()), eaKey, v); err != nil {
+		log.Errorf("truncate xattr failed: %v", err)
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(statusFromVFSError(err)))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
 
 	rsp := new(SetInfoResponse)
 	PrepareResponse(&rsp.PacketHeader, pkt, 0)
 	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func statusFromVFSError(err error) NtStatus {
+	switch {
+	case err == nil:
+		return STATUS_SUCCESS
+	case errors.Is(err, syscall.ENOSPC):
+		return STATUS_DISK_FULL
+	case errors.Is(err, os.ErrNotExist):
+		return STATUS_OBJECT_NAME_NOT_FOUND
+	case errors.Is(err, os.ErrExist):
+		return STATUS_OBJECT_NAME_COLLISION
+	case errors.Is(err, os.ErrPermission):
+		return STATUS_ACCESS_DENIED
+	case errors.Is(err, syscall.EBADF):
+		return STATUS_INVALID_HANDLE
+	default:
+		return STATUS_IO_DEVICE_ERROR
+	}
 }
 
 func dispositionDeletePending(pkt []byte) bool {
