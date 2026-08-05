@@ -21,6 +21,7 @@ import (
 	. "github.com/macos-fuse-t/go-smb2/internal/erref"
 	. "github.com/macos-fuse-t/go-smb2/internal/smb2"
 	"github.com/macos-fuse-t/go-smb2/vfs"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/exp/maps"
 )
 
@@ -361,6 +362,11 @@ func (c *conn) Run() error {
 		}
 
 		p := PacketCodec(pkt)
+		started := time.Now()
+		requestLog := log.WithFields(logrus.Fields{
+			"command": p.Command(), "message_id": p.MessageId(), "session_id": p.SessionId(), "tree_id": p.TreeId(),
+		})
+		requestLog.Debug("frontend SMB request")
 		if p.Flags()&SMB2_FLAGS_ASYNC_COMMAND != 0 {
 			log.Debugf("Async command %d", p.Command())
 		}
@@ -426,9 +432,10 @@ func (c *conn) Run() error {
 			}
 		}
 		if err != nil {
-			log.Errorf("err: %v", err)
+			requestLog.WithField("duration", time.Since(started)).Errorf("frontend SMB request failed: %v", err)
 			return err
 		}
+		requestLog.WithField("duration", time.Since(started)).Debug("frontend SMB request dispatched")
 	}
 }
 

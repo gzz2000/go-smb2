@@ -13,6 +13,7 @@ import (
 	. "github.com/macos-fuse-t/go-smb2/internal/erref"
 	. "github.com/macos-fuse-t/go-smb2/internal/smb2"
 	"github.com/macos-fuse-t/go-smb2/vfs"
+	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -736,6 +737,7 @@ func (t *fileTree) read(ctx *compoundContext, pkt []byte) error {
 
 func (t *fileTree) readImpl(ctx *compoundContext, pkt []byte, fileId *FileId, open *Open, asyncId uint64) error {
 	c := t.session.conn
+	started := time.Now()
 
 	res, _ := accept(SMB2_READ, pkt)
 	r := ReadRequestDecoder(res)
@@ -750,7 +752,7 @@ func (t *fileTree) readImpl(ctx *compoundContext, pkt []byte, fileId *FileId, op
 
 	n, err = t.fs.Read(vfs.VfsHandle(fileId.HandleId()), buf, r.Offset(), 0)
 	if err != nil && n == 0 {
-		status := STATUS_ACCESS_DENIED
+		status := statusFromVFSError(err)
 		if err == io.EOF {
 			if !open.isEa {
 				status = STATUS_END_OF_FILE
@@ -758,7 +760,10 @@ func (t *fileTree) readImpl(ctx *compoundContext, pkt []byte, fileId *FileId, op
 				status = STATUS_OBJECT_NAME_NOT_FOUND
 			}
 		} else {
-			log.Errorf("Read: %v", err)
+			log.WithFields(logrus.Fields{
+				"path": open.pathName, "handle": fileId.HandleId(), "offset": r.Offset(),
+				"length": r.Length(), "duration": time.Since(started), "status": fmt.Sprintf("0x%08x", uint32(status)),
+			}).Errorf("frontend read failed: %v", err)
 		}
 		rsp := new(ErrorResponse)
 		PrepareAsyncResponse(rsp.Header(), pkt, asyncId, uint32(status))
@@ -770,7 +775,10 @@ func (t *fileTree) readImpl(ctx *compoundContext, pkt []byte, fileId *FileId, op
 	rsp.DataRemaining = 0
 	rsp.Data = buf[:n]
 
-	log.Debugf("read async %d finished", asyncId)
+	log.WithFields(logrus.Fields{
+		"path": open.pathName, "handle": fileId.HandleId(), "offset": r.Offset(),
+		"requested": r.Length(), "returned": n, "duration": time.Since(started),
+	}).Debug("frontend read completed")
 	return c.sendPacket(rsp, &t.treeConn, ctx)
 }
 
@@ -827,12 +835,13 @@ func (t *fileTree) writeImpl(ctx *compoundContext, pkt []byte, fileId *FileId, o
 	var err error
 
 	c := t.session.conn
+	started := time.Now()
 
 	res, _ := accept(SMB2_WRITE, pkt)
 	r := WriteRequestDecoder(res)
 
 	if open.isEa {
-		log.Debugf("write ea: key %s, val %s", open.eaKey, r.Data())
+		log.WithFields(logrus.Fields{"path": open.pathName, "xattr": open.eaKey, "length": len(r.Data())}).Debug("frontend xattr write")
 		if err = t.fs.Setxattr(vfs.VfsHandle(fileId.HandleId()), open.eaKey, r.Data()); err == nil {
 			n = len(r.Data())
 		}
@@ -842,8 +851,11 @@ func (t *fileTree) writeImpl(ctx *compoundContext, pkt []byte, fileId *FileId, o
 	}
 
 	if err != nil || n == 0 {
-		log.Errorf("Write failed: %v", err)
 		status := statusFromVFSError(err)
+		log.WithFields(logrus.Fields{
+			"path": open.pathName, "handle": fileId.HandleId(), "offset": r.Offset(),
+			"length": r.Length(), "duration": time.Since(started), "status": fmt.Sprintf("0x%08x", uint32(status)),
+		}).Errorf("frontend write failed: %v", err)
 		rsp := new(ErrorResponse)
 		PrepareAsyncResponse(rsp.Header(), pkt, asyncId, uint32(status))
 		return c.sendPacket(rsp, &t.treeConn, ctx)
@@ -852,6 +864,10 @@ func (t *fileTree) writeImpl(ctx *compoundContext, pkt []byte, fileId *FileId, o
 	rsp := new(WriteResponse)
 	PrepareAsyncResponse(&rsp.PacketHeader, pkt, asyncId, 0)
 	rsp.Count = uint32(n)
+	log.WithFields(logrus.Fields{
+		"path": open.pathName, "handle": fileId.HandleId(), "offset": r.Offset(),
+		"length": n, "duration": time.Since(started),
+	}).Debug("frontend write completed")
 
 	return c.sendPacket(rsp, &t.treeConn, ctx)
 }
