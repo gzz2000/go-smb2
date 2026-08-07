@@ -2,6 +2,28 @@ package smb2
 
 import "testing"
 
+func TestShortPacketIsInvalidWithoutPanicking(t *testing.T) {
+	for length := 0; length < 4; length++ {
+		packet := PacketCodec(make([]byte, length))
+		if !packet.IsInvalid() {
+			t.Fatalf("packet length %d was accepted", length)
+		}
+		if packet.IsSmb1() {
+			t.Fatalf("packet length %d was identified as SMB1", length)
+		}
+		if protocol := packet.ProtocolId(); protocol != nil {
+			t.Fatalf("packet length %d protocol ID=%v, want nil", length, protocol)
+		}
+	}
+}
+
+func TestMinimalSMB1NegotiatePacketRemainsValid(t *testing.T) {
+	packet := PacketCodec{0xff, 'S', 'M', 'B', SMB_COM_NEGOTIATE}
+	if packet.IsInvalid() {
+		t.Fatal("minimal SMB1 negotiate packet was rejected")
+	}
+}
+
 func TestEncodeHeaderUsesAsyncIdWhenPresent(t *testing.T) {
 	hdr := PacketHeader{
 		Command:   SMB2_READ,

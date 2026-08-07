@@ -23,3 +23,16 @@ go build
 ```
 ./go-smb2 [-g] [-l listen_address] [-m mount_dir]
 ```
+
+For the smbrelay co-designed bulk journal extension, export the same secret
+configured by the relay before starting this backend:
+
+```
+export SMBRELAY_BULK_SECRET='a-long-random-secret-shared-with-the-relay'
+./go-smb2 -l 0.0.0.0:8008 -m /path/to/share
+```
+
+With no secret the private extension is disabled and normal SMB behavior is
+unchanged. With a secret it exposes the versioned `.smbrelay-bulk-v1` control
+directory, accepts HMAC-authenticated packages, applies them in journal order,
+and writes a durable per-relay sequence receipt.

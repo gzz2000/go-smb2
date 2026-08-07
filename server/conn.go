@@ -2,7 +2,9 @@ package smb2
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -239,12 +241,23 @@ func (conn *conn) runReciever() {
 
 			goto exit
 		}
+		if n <= 0 {
+			err = &TransportError{errors.New("invalid zero-length transport packet")}
+
+			goto exit
+		}
 
 		pkt := make([]byte, n)
 
-		_, e = conn.t.Read(pkt)
+		var read int
+		read, e = conn.t.Read(pkt)
 		if e != nil {
 			err = &TransportError{e}
+
+			goto exit
+		}
+		if read != n {
+			err = &TransportError{io.ErrUnexpectedEOF}
 
 			goto exit
 		}

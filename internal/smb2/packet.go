@@ -65,8 +65,12 @@ type Packet interface {
 type PacketCodec []byte
 
 func (p PacketCodec) IsInvalid() bool {
-	if p.IsSmb1() && p.Command() == SMB_COM_NEGOTIATE {
-		return false
+	if len(p) < 4 {
+		return true
+	}
+
+	if p.IsSmb1() {
+		return len(p) < 5 || p[4] != SMB_COM_NEGOTIATE
 	}
 
 	if len(p) < 64 {
@@ -114,6 +118,9 @@ func (p PacketCodec) IsCompoundLast() bool {
 }
 
 func (p PacketCodec) IsSmb1() bool {
+	if len(p) < 4 {
+		return false
+	}
 	magic := p.ProtocolId()
 	if magic[0] != 0xff {
 		return false
@@ -131,6 +138,9 @@ func (p PacketCodec) IsSmb1() bool {
 }
 
 func (p PacketCodec) ProtocolId() []byte {
+	if len(p) < 4 {
+		return nil
+	}
 	return p[:4]
 }
 

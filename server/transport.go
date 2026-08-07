@@ -65,7 +65,12 @@ func (t *directTCP) ReadSize() (size int, err error) {
 		return -1, errors.New("invalid transport format")
 	}
 
-	return int(be.Uint32(bs)), nil
+	size = int(be.Uint32(bs))
+	if size == 0 {
+		return -1, errors.New("invalid zero-length transport packet")
+	}
+
+	return size, nil
 }
 
 func (t *directTCP) Read(p []byte) (n int, err error) {

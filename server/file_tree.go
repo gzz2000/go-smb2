@@ -2354,7 +2354,7 @@ func (t *fileTree) setRename(ctx *compoundContext, fileId *FileId, pkt []byte) e
 	if err := t.fs.Rename(vfs.VfsHandle(fileId.HandleId()), to, int(info.ReplaceIfExists())); err != nil {
 		log.Errorf("rename failed: %v", err)
 		rsp := new(ErrorResponse)
-		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_ACCESS_DENIED))
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(statusFromVFSError(err)))
 		return c.sendPacket(rsp, &t.treeConn, ctx)
 	}
 	if open := t.conn.serverCtx.getOpen(fileId.HandleId()); open != nil {
