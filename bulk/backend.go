@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/macos-fuse-t/go-smb2/internal/xattrstore"
 	"github.com/pkg/xattr"
 )
 
@@ -181,14 +182,14 @@ func apply(root string, batch *Batch) error {
 				return err
 			}
 		case "setxattr":
-			if err := xattr.Set(p, op.Name, op.Data); err != nil {
+			if err := xattrstore.Set(p, op.Name, op.Data); err != nil {
 				return err
 			}
 			if err := syncFile(p); err != nil {
 				return err
 			}
 		case "removexattr":
-			if err := xattr.Remove(p, op.Name); err != nil && !errors.Is(err, xattr.ENOATTR) {
+			if err := xattrstore.Remove(p, op.Name); err != nil && !errors.Is(err, xattr.ENOATTR) {
 				return err
 			}
 			if err := syncFile(p); err != nil {

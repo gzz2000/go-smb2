@@ -13,9 +13,9 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/macos-fuse-t/go-smb2/bulk"
+	"github.com/macos-fuse-t/go-smb2/internal/xattrstore"
 	"github.com/macos-fuse-t/go-smb2/stats"
 	"github.com/macos-fuse-t/go-smb2/vfs"
-	"github.com/pkg/xattr"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -513,7 +513,7 @@ func (fs *PassthroughFS) Listxattr(handle vfs.VfsHandle) ([]string, error) {
 
 	stats.AddXattrList(open.path)
 
-	return xattr.FList(open.f)
+	return xattrstore.FList(open.f)
 }
 
 func (fs *PassthroughFS) Getxattr(handle vfs.VfsHandle, key string, val []byte) (int, error) {
@@ -528,7 +528,7 @@ func (fs *PassthroughFS) Getxattr(handle vfs.VfsHandle, key string, val []byte) 
 	}
 	open := o.(*OpenFile)
 
-	v, err := xattr.FGet(open.f, key)
+	v, err := xattrstore.FGet(open.f, key)
 	if err != nil {
 		return 0, err
 	}
@@ -555,7 +555,7 @@ func (fs *PassthroughFS) Setxattr(handle vfs.VfsHandle, key string, val []byte) 
 	open := v.(*OpenFile)
 
 	stats.AddXattrWrite(open.path)
-	return xattr.FSet(open.f, key, val)
+	return xattrstore.FSet(open.f, key, val)
 }
 
 func (fs *PassthroughFS) Removexattr(handle vfs.VfsHandle, key string) error {
@@ -571,7 +571,7 @@ func (fs *PassthroughFS) Removexattr(handle vfs.VfsHandle, key string) error {
 	open := v.(*OpenFile)
 
 	stats.AddXattrDelete(open.path)
-	return xattr.FRemove(open.f, key)
+	return xattrstore.FRemove(open.f, key)
 }
 
 func (fs *PassthroughFS) Truncate(handle vfs.VfsHandle, len uint64) error {

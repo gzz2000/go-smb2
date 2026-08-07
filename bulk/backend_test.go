@@ -3,7 +3,10 @@ package bulk
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+
+	"github.com/macos-fuse-t/go-smb2/internal/xattrstore"
 )
 
 func TestCommitReadyAppliesAndRecoversIdempotently(t *testing.T) {
@@ -74,5 +77,51 @@ func TestCommitReadyAppliesAndRecoversIdempotently(t *testing.T) {
 	}
 	if _, err := CommitReady(root, gapReady, maximum); err == nil {
 		t.Fatal("sequence gap was accepted")
+	}
+}
+
+func TestCommitReadyAppliesAppleXattrReplacement(t *testing.T) {
+	root := t.TempDir()
+	const maximum = int64(8 << 20)
+	if err := Initialize(root, maximum); err != nil {
+		t.Fatal(err)
+	}
+	const bundle = "Zizheng's MacBook Air.sparsebundle"
+	if err := os.Mkdir(filepath.Join(root, bundle), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []byte("0123456789abcdef")
+	batch := &Batch{
+		RelayID:  "relay-xattr",
+		BatchID:  "5-6",
+		FirstSeq: 5,
+		LastSeq:  6,
+		Operations: []Operation{
+			{Seq: 5, Type: "setxattr", Path: bundle, Name: "com.apple.lastuseddate#PS", Data: []byte{}},
+			{Seq: 6, Type: "setxattr", Path: bundle, Name: "com.apple.lastuseddate#PS", Data: want},
+		},
+	}
+	encoded, _, err := Encode(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready := filepath.Join(root, filepath.FromSlash(ReadyPath(batch.BatchID)))
+	if err := os.WriteFile(ready, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := CommitReady(root, ready, maximum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.LastSeq != 6 {
+		t.Fatalf("receipt = %+v", receipt)
+	}
+	got, err := xattrstore.Get(filepath.Join(root, bundle), "com.apple.lastuseddate#PS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("xattr = %x, want %x", got, want)
 	}
 }
