@@ -31,7 +31,6 @@ type OpenFile struct {
 type PassthroughFS struct {
 	rootPath     string
 	openFiles    sync.Map
-	bulkSecret   []byte
 	bulkMaxBytes int64
 	//watcher   *fsnotify.Watcher
 }
@@ -41,11 +40,10 @@ func NewPassthroughFS(rootPath string) *PassthroughFS {
 	fs := &PassthroughFS{
 		rootPath:     rootPath,
 		openFiles:    sync.Map{},
-		bulkSecret:   []byte(os.Getenv("SMBRELAY_BULK_SECRET")),
 		bulkMaxBytes: 256 << 20,
 		//watcher:   watcher,
 	}
-	if err := bulk.Initialize(rootPath, fs.bulkSecret, fs.bulkMaxBytes); err != nil {
+	if err := bulk.Initialize(rootPath, fs.bulkMaxBytes); err != nil {
 		log.Errorf("initialize bulk journal extension: %v", err)
 	}
 	return fs
@@ -432,13 +430,11 @@ func (fs *PassthroughFS) Rename(from vfs.VfsHandle, to string, flags int) error 
 		return err
 	}
 	open.path = target
-	if len(fs.bulkSecret) != 0 {
-		rel, relErr := filepath.Rel(fs.rootPath, target)
-		rel = filepath.ToSlash(rel)
-		if relErr == nil && strings.HasPrefix(rel, bulk.Directory+"/inbox/") && strings.HasSuffix(rel, ".ready") {
-			if _, err := bulk.CommitReady(fs.rootPath, target, fs.bulkSecret, fs.bulkMaxBytes); err != nil {
-				return fmt.Errorf("commit bulk journal: %w", err)
-			}
+	rel, relErr := filepath.Rel(fs.rootPath, target)
+	rel = filepath.ToSlash(rel)
+	if relErr == nil && strings.HasPrefix(rel, bulk.Directory+"/inbox/") && strings.HasSuffix(rel, ".ready") {
+		if _, err := bulk.CommitReady(fs.rootPath, target, fs.bulkMaxBytes); err != nil {
+			return fmt.Errorf("commit bulk journal: %w", err)
 		}
 	}
 	return nil

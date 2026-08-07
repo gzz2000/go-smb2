@@ -4,7 +4,6 @@ package bulk
 
 import (
 	"bytes"
-	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -15,12 +14,12 @@ import (
 )
 
 const (
-	Directory        = ".smbrelay-bulk-v1"
+	Directory        = ".smbrelay-bulk-v2"
 	CapabilitiesPath = Directory + "/capabilities.json"
-	Protocol         = "smbrelay-bulk-journal-v1"
+	Protocol         = "smbrelay-bulk-journal-v2"
 )
 
-var magic = [8]byte{'S', 'M', 'B', 'R', 'B', 'L', 'K', '1'}
+var magic = [8]byte{'S', 'M', 'B', 'R', 'B', 'L', 'K', '2'}
 
 type Capabilities struct {
 	Protocol      string `json:"protocol"`
@@ -70,10 +69,7 @@ type manifest struct {
 	Operations        []wireOperation
 }
 
-func Encode(batch *Batch, secret []byte) ([]byte, string, error) {
-	if len(secret) == 0 {
-		return nil, "", errors.New("bulk journal secret is empty")
-	}
+func Encode(batch *Batch) ([]byte, string, error) {
 	var payload bytes.Buffer
 	m := manifest{RelayID: batch.RelayID, BatchID: batch.BatchID, FirstSeq: batch.FirstSeq, LastSeq: batch.LastSeq}
 	for _, op := range batch.Operations {
@@ -94,42 +90,30 @@ func Encode(batch *Batch, secret []byte) ([]byte, string, error) {
 	}
 	body := append(append([]byte(nil), manifestBytes...), payload.Bytes()...)
 	sum := sha256.Sum256(body)
-	mac := hmac.New(sha256.New, secret)
-	_, _ = mac.Write(sum[:])
 	var out bytes.Buffer
 	_, _ = out.Write(magic[:])
 	_ = binary.Write(&out, binary.BigEndian, uint32(len(manifestBytes)))
 	_ = binary.Write(&out, binary.BigEndian, uint64(payload.Len()))
 	_, _ = out.Write(sum[:])
-	_, _ = out.Write(mac.Sum(nil))
 	_, _ = out.Write(body)
 	return out.Bytes(), hex.EncodeToString(sum[:]), nil
 }
 
-func Decode(data, secret []byte) (*Batch, string, error) {
-	if len(secret) == 0 {
-		return nil, "", errors.New("bulk journal secret is empty")
-	}
-	const headerSize = 8 + 4 + 8 + sha256.Size + sha256.Size
+func Decode(data []byte) (*Batch, string, error) {
+	const headerSize = 8 + 4 + 8 + sha256.Size
 	if len(data) < headerSize || !bytes.Equal(data[:8], magic[:]) {
 		return nil, "", errors.New("invalid bulk journal header")
 	}
 	manifestLength := binary.BigEndian.Uint32(data[8:12])
 	payloadLength := binary.BigEndian.Uint64(data[12:20])
 	wantSum := data[20 : 20+sha256.Size]
-	wantMAC := data[20+sha256.Size : headerSize]
 	body := data[headerSize:]
 	if uint64(len(body)) != uint64(manifestLength)+payloadLength {
 		return nil, "", errors.New("invalid bulk journal length")
 	}
 	sum := sha256.Sum256(body)
-	if !hmac.Equal(sum[:], wantSum) {
+	if !bytes.Equal(sum[:], wantSum) {
 		return nil, "", errors.New("bulk journal checksum mismatch")
-	}
-	mac := hmac.New(sha256.New, secret)
-	_, _ = mac.Write(sum[:])
-	if !hmac.Equal(mac.Sum(nil), wantMAC) {
-		return nil, "", errors.New("bulk journal authentication failed")
 	}
 	var m manifest
 	if err := json.Unmarshal(body[:manifestLength], &m); err != nil {

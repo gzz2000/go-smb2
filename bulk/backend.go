@@ -13,10 +13,7 @@ import (
 	"github.com/pkg/xattr"
 )
 
-func Initialize(root string, secret []byte, maxBatchBytes int64) error {
-	if len(secret) == 0 {
-		return nil
-	}
+func Initialize(root string, maxBatchBytes int64) error {
 	for _, dir := range []string{Directory, Directory + "/inbox", Directory + "/receipts"} {
 		if err := os.MkdirAll(filepath.Join(root, filepath.FromSlash(dir)), 0o700); err != nil {
 			return err
@@ -26,7 +23,7 @@ func Initialize(root string, secret []byte, maxBatchBytes int64) error {
 	return writeAtomic(filepath.Join(root, filepath.FromSlash(CapabilitiesPath)), capabilities)
 }
 
-func CommitReady(root, readyPath string, secret []byte, maxBatchBytes int64) (*Receipt, error) {
+func CommitReady(root, readyPath string, maxBatchBytes int64) (*Receipt, error) {
 	info, err := os.Stat(readyPath)
 	if err != nil {
 		return nil, err
@@ -44,7 +41,7 @@ func CommitReady(root, readyPath string, secret []byte, maxBatchBytes int64) (*R
 	if err != nil {
 		return nil, err
 	}
-	batch, hash, err := Decode(data, secret)
+	batch, hash, err := Decode(data)
 	if err != nil {
 		return nil, err
 	}

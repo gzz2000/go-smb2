@@ -8,9 +8,8 @@ import (
 
 func TestCommitReadyAppliesAndRecoversIdempotently(t *testing.T) {
 	root := t.TempDir()
-	secret := []byte("backend-secret")
 	const maximum = int64(8 << 20)
-	if err := Initialize(root, secret, maximum); err != nil {
+	if err := Initialize(root, maximum); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "a"), []byte("000000"), 0o600); err != nil {
@@ -24,7 +23,7 @@ func TestCommitReadyAppliesAndRecoversIdempotently(t *testing.T) {
 		{Seq: 11, Type: "write", Path: "b", Offset: 2, Length: 1, Data: []byte("B")},
 		{Seq: 12, Type: "write", Path: "a", Offset: 1, Length: 2, Data: []byte("ZZ")},
 	}}
-	encoded, hash, err := Encode(batch, secret)
+	encoded, hash, err := Encode(batch)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +31,7 @@ func TestCommitReadyAppliesAndRecoversIdempotently(t *testing.T) {
 	if err := os.WriteFile(ready, encoded, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	receipt, err := CommitReady(root, ready, secret, maximum)
+	receipt, err := CommitReady(root, ready, maximum)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,17 +49,17 @@ func TestCommitReadyAppliesAndRecoversIdempotently(t *testing.T) {
 	if err := os.WriteFile(ready, encoded, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if retry, err := CommitReady(root, ready, secret, maximum); err != nil || retry.LastSeq != 12 {
+	if retry, err := CommitReady(root, ready, maximum); err != nil || retry.LastSeq != 12 {
 		t.Fatalf("idempotent retry receipt=%+v err=%v", retry, err)
 	}
 
 	rename := &Batch{RelayID: "relay-a", BatchID: "13", FirstSeq: 13, LastSeq: 13, Operations: []Operation{{Seq: 13, Type: "rename", Path: "a", Target: "renamed"}}}
-	renameData, _, _ := Encode(rename, secret)
+	renameData, _, _ := Encode(rename)
 	renameReady := filepath.Join(root, filepath.FromSlash(ReadyPath(rename.BatchID)))
 	if err := os.WriteFile(renameReady, renameData, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := CommitReady(root, renameReady, secret, maximum); err != nil {
+	if _, err := CommitReady(root, renameReady, maximum); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "renamed")); err != nil {
@@ -68,12 +67,12 @@ func TestCommitReadyAppliesAndRecoversIdempotently(t *testing.T) {
 	}
 
 	gap := &Batch{RelayID: "relay-a", BatchID: "gap", FirstSeq: 20, LastSeq: 20, Operations: []Operation{{Seq: 20, Type: "truncate", Path: "renamed", Length: 1}}}
-	gapData, _, _ := Encode(gap, secret)
+	gapData, _, _ := Encode(gap)
 	gapReady := filepath.Join(root, filepath.FromSlash(ReadyPath(gap.BatchID)))
 	if err := os.WriteFile(gapReady, gapData, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := CommitReady(root, gapReady, secret, maximum); err == nil {
+	if _, err := CommitReady(root, gapReady, maximum); err == nil {
 		t.Fatal("sequence gap was accepted")
 	}
 }

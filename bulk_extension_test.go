@@ -10,14 +10,12 @@ import (
 
 func TestPassthroughRenameCommitsBulkPackage(t *testing.T) {
 	root := t.TempDir()
-	secret := "vfs-shared-secret"
-	t.Setenv("SMBRELAY_BULK_SECRET", secret)
 	fs := NewPassthroughFS(root)
 	batch := &bulk.Batch{RelayID: "relay-vfs", BatchID: "batch-vfs", FirstSeq: 1, LastSeq: 2, Operations: []bulk.Operation{
 		{Seq: 1, Type: "create", Path: "band", Mode: 0o600},
 		{Seq: 2, Type: "write", Path: "band", Offset: 3, Length: 4, Data: []byte("data")},
 	}}
-	encoded, _, err := bulk.Encode(batch, []byte(secret))
+	encoded, _, err := bulk.Encode(batch)
 	if err != nil {
 		t.Fatal(err)
 	}
