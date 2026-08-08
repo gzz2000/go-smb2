@@ -50,20 +50,35 @@ func CommitReady(root, readyPath string, maxBatchBytes int64) (*Receipt, error) 
 		return nil, err
 	}
 	receiptPath := filepath.Join(root, filepath.FromSlash(ReceiptPath(batch.RelayID)))
+	progressPath := readyPath + ".progress"
 	if previous, readErr := readReceipt(receiptPath); readErr == nil {
 		if previous.Protocol != Protocol || previous.RelayID != batch.RelayID {
 			return nil, errors.New("invalid previous bulk receipt")
 		}
 		if previous.LastSeq >= batch.LastSeq {
-			_ = os.Remove(readyPath)
-			_ = syncDirectory(filepath.Dir(readyPath))
+			removeApplyArtifacts(readyPath, progressPath)
 			return previous, nil
 		}
 		if batch.FirstSeq > previous.LastSeq+1 {
 			return nil, fmt.Errorf("bulk journal sequence gap: receipt=%d batch=%d", previous.LastSeq, batch.FirstSeq)
 		}
 	}
-	if err := apply(root, batch); err != nil {
+	next, err := readApplyProgress(progressPath, batch, hash)
+	if err != nil {
+		return nil, err
+	}
+	checkpoint := func(nextOperation int) error {
+		progress := applyProgress{
+			Version: 1, RelayID: batch.RelayID, BatchID: batch.BatchID,
+			Hash: hash, NextOperation: nextOperation,
+		}
+		data, err := json.Marshal(&progress)
+		if err != nil {
+			return err
+		}
+		return writeAtomic(progressPath, data)
+	}
+	if err := apply(root, batch, next, checkpoint); err != nil {
 		return nil, err
 	}
 	receipt := &Receipt{Protocol: Protocol, RelayID: batch.RelayID, BatchID: batch.BatchID, LastSeq: batch.LastSeq, Hash: hash}
@@ -71,13 +86,47 @@ func CommitReady(root, readyPath string, maxBatchBytes int64) (*Receipt, error) 
 	if err := writeAtomic(receiptPath, receiptData); err != nil {
 		return nil, err
 	}
-	_ = os.Remove(readyPath)
-	_ = syncDirectory(filepath.Dir(readyPath))
+	removeApplyArtifacts(readyPath, progressPath)
 	return receipt, nil
 }
 
-func apply(root string, batch *Batch) error {
-	for i := 0; i < len(batch.Operations); {
+type applyProgress struct {
+	Version       int    `json:"version"`
+	RelayID       string `json:"relay_id"`
+	BatchID       string `json:"batch_id"`
+	Hash          string `json:"hash"`
+	NextOperation int    `json:"next_operation"`
+}
+
+func readApplyProgress(path string, batch *Batch, hash string) (int, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	var progress applyProgress
+	if err := json.Unmarshal(data, &progress); err != nil {
+		return 0, fmt.Errorf("decode bulk apply progress: %w", err)
+	}
+	if progress.Version != 1 || progress.RelayID != batch.RelayID || progress.BatchID != batch.BatchID || progress.Hash != hash || progress.NextOperation < 0 || progress.NextOperation > len(batch.Operations) {
+		return 0, errors.New("bulk apply progress does not match ready package")
+	}
+	return progress.NextOperation, nil
+}
+
+func removeApplyArtifacts(paths ...string) {
+	for _, path := range paths {
+		_ = os.Remove(path)
+	}
+	if len(paths) != 0 {
+		_ = syncDirectory(filepath.Dir(paths[0]))
+	}
+}
+
+func apply(root string, batch *Batch, start int, checkpoint func(int) error) error {
+	for i := start; i < len(batch.Operations); {
 		if batch.Operations[i].Type == "write" {
 			end := i + 1
 			for end < len(batch.Operations) && batch.Operations[end].Type == "write" {
@@ -86,11 +135,14 @@ func apply(root string, batch *Batch) error {
 			if err := applyWriteRun(root, batch.Operations[i:end]); err != nil {
 				return err
 			}
+			if err := checkpoint(end); err != nil {
+				return err
+			}
 			i = end
 			continue
 		}
 		op := batch.Operations[i]
-		i++
+		next := i + 1
 		p, err := resolve(root, op.Path)
 		if err != nil {
 			return err
@@ -106,7 +158,7 @@ func apply(root string, batch *Batch) error {
 				}
 			} else if errors.Is(createErr, os.ErrExist) {
 				info, statErr := os.Lstat(p)
-				if statErr == nil && info.Mode().IsRegular() {
+				if statErr == nil && (info.Mode().IsRegular() || (info.Mode()&os.ModeSymlink != 0 && laterSymlinkReplaces(batch.Operations[next:], op.Path))) {
 					createErr = nil
 				}
 			}
@@ -136,14 +188,20 @@ func apply(root string, batch *Batch) error {
 				return err
 			}
 		case "setattr":
-			if err := os.Chmod(p, os.FileMode(op.Mode)); err != nil {
+			info, err := os.Lstat(p)
+			if err != nil {
 				return err
 			}
-			if err := os.Chtimes(p, time.Unix(0, op.ATime), time.Unix(0, op.MTime)); err != nil {
-				return err
-			}
-			if err := syncFile(p); err != nil {
-				return err
+			if info.Mode()&os.ModeSymlink == 0 {
+				if err := os.Chmod(p, os.FileMode(op.Mode)); err != nil {
+					return err
+				}
+				if err := os.Chtimes(p, time.Unix(0, op.ATime), time.Unix(0, op.MTime)); err != nil {
+					return err
+				}
+				if err := syncFile(p); err != nil {
+					return err
+				}
 			}
 		case "rename":
 			target, err := resolve(root, op.Target)
@@ -182,24 +240,50 @@ func apply(root string, batch *Batch) error {
 				return err
 			}
 		case "setxattr":
-			if err := xattrstore.Set(p, op.Name, op.Data); err != nil {
+			info, err := os.Lstat(p)
+			if err != nil {
 				return err
 			}
-			if err := syncFile(p); err != nil {
-				return err
+			if info.Mode()&os.ModeSymlink == 0 {
+				if err := xattrstore.Set(p, op.Name, op.Data); err != nil {
+					return err
+				}
+				if err := syncFile(p); err != nil {
+					return err
+				}
 			}
 		case "removexattr":
-			if err := xattrstore.Remove(p, op.Name); err != nil && !errors.Is(err, xattr.ENOATTR) {
+			info, err := os.Lstat(p)
+			if err != nil {
 				return err
 			}
-			if err := syncFile(p); err != nil {
-				return err
+			if info.Mode()&os.ModeSymlink == 0 {
+				if err := xattrstore.Remove(p, op.Name); err != nil && !errors.Is(err, xattr.ENOATTR) {
+					return err
+				}
+				if err := syncFile(p); err != nil {
+					return err
+				}
 			}
 		default:
 			return fmt.Errorf("unsupported bulk operation %q", op.Type)
 		}
+		if err := checkpoint(next); err != nil {
+			return err
+		}
+		i = next
 	}
 	return nil
+}
+
+func laterSymlinkReplaces(ops []Operation, name string) bool {
+	for _, op := range ops {
+		if op.Path != name {
+			continue
+		}
+		return op.Type == "symlink"
+	}
+	return false
 }
 
 // Writes commute across distinct files until the next namespace/metadata
